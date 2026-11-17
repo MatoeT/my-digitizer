@@ -23,34 +23,27 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# One colour per dataset. A new dataset takes the next colour in the list.
 COLORS = ["#e6194b", "#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd",
           "#17becf", "#8c564b", "#e377c2", "#bcbd22", "#000000"]
-MAX_DISPLAY_W = 850   # widest the image is drawn on screen, in pixels
-MAX_DISPLAY_H = 650   # tallest the image is drawn on screen, in pixels
+MAX_DISPLAY_W = 850
+MAX_DISPLAY_H = 650
 CAL_NAMES = ["origin", "x-axis point", "y-axis point"]
 CAL_TAGS = ["O", "X", "Y"]
 MODE_CAL = "1 · Calibrate axes"
 MODE_PICK = "2 · Pick data points"
 
 
-# ----------------------------------------------------------------------------
-# Image helpers
-# ----------------------------------------------------------------------------
 def load_image(file) -> Image.Image:
-    """Open png / jpg / gif / tiff, colour or greyscale, and return plain RGB."""
     img = Image.open(file)
-    img.seek(0)                              # first frame of a gif or tiff
-    img = ImageOps.exif_transpose(img)       # respect phone-camera rotation
+    img.seek(0)
+    img = ImageOps.exif_transpose(img)
 
-    # 16-bit and floating-point greyscale (common in TIFF scans) -> 8-bit
     if img.mode.startswith("I") or img.mode == "F":
         arr = np.asarray(img, dtype=float)
         lo, hi = arr.min(), arr.max()
         arr = (arr - lo) / (hi - lo) * 255 if hi > lo else np.zeros_like(arr)
         img = Image.fromarray(arr.astype(np.uint8))
 
-    # Put transparent images on a white background
     if img.mode in ("RGBA", "LA") or "transparency" in img.info:
         img = img.convert("RGBA")
         white = Image.new("RGBA", img.size, "white")
@@ -60,7 +53,6 @@ def load_image(file) -> Image.Image:
 
 
 def get_font(size: int):
-    """Default PIL font at a chosen size (older Pillow has one size only)."""
     try:
         return ImageFont.load_default(size=size)
     except TypeError:
@@ -68,27 +60,22 @@ def get_font(size: int):
 
 
 def make_sample_image() -> Image.Image:
-    """Draw a demo graph so the app can be tried without uploading anything.
-
-    Topic: absorbance of gold nanoparticles vs wavelength. The picture is
-    rotated by 2 degrees on purpose, to act like a crooked scan.
-    """
     W, H = 900, 600
     left, right, top, bottom = 110, 850, 60, 500
     img = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(img)
     font, small = get_font(18), get_font(14)
 
-    def to_px(x, y):                         # data -> pixel for the sample
+    def to_px(x, y):
         return (left + (x - 400) / 300 * (right - left),
                 bottom - y / 1.0 * (bottom - top))
 
     d.line([left, top, left, bottom, right, bottom], fill="black", width=2)
-    for x in range(400, 701, 50):            # x ticks
+    for x in range(400, 701, 50):
         px, py = to_px(x, 0)
         d.line([px, py, px, py + 7], fill="black", width=2)
         d.text((px, py + 12), str(x), fill="black", font=small, anchor="ma")
-    for i in range(0, 11, 2):                # y ticks
+    for i in range(0, 11, 2):
         px, py = to_px(400, i / 10)
         d.line([px - 7, py, px, py], fill="black", width=2)
         d.text((px - 12, py), f"{i / 10:.1f}", fill="black", font=small, anchor="rm")
@@ -98,7 +85,6 @@ def make_sample_image() -> Image.Image:
     d.text((right, top - 35), "Gold nanoparticles (sample graph)",
            fill="gray", font=small, anchor="ra")
 
-    # Two curves drawn as markers: a peak near 520 nm and one near 570 nm
     for peak, width, height, colour, shape in [(520, 45, 0.85, "#1f4e9c", "circle"),
                                                (570, 70, 0.60, "#c0392b", "square")]:
         for x in range(410, 700, 20):
@@ -110,25 +96,7 @@ def make_sample_image() -> Image.Image:
     return img.rotate(2, expand=True, fillcolor="white", resample=Image.BICUBIC)
 
 
-# ----------------------------------------------------------------------------
-# Calibration maths
-# ----------------------------------------------------------------------------
 def make_transform(cal_pts, x0, x1, y0, y1, x_log, y_log):
-    """Build the two conversion functions: pixel -> data and data -> pixel.
-
-    cal_pts = [origin, x-axis point, y-axis point], all in image pixels.
-    x0, y0  = real values at the origin click.
-    x1      = real x value at the x-axis click.
-    y1      = real y value at the y-axis click.
-
-    Idea: u is the arrow from the origin to the x-axis click, and v is the
-    arrow from the origin to the y-axis click. Any pixel can be written as
-        pixel = origin + a*u + b*v
-    so 'a' is the fraction of the way along the x-axis and 'b' the fraction
-    along the y-axis. Because u and v come from the clicks themselves, a
-    rotated (or even slightly skewed) scan is handled automatically.
-    On a log axis the fraction is applied to log10 of the values instead.
-    """
     if len(cal_pts) < 3:
         raise ValueError("Click all three calibration points first.")
     if x0 == x1:
@@ -149,7 +117,6 @@ def make_transform(cal_pts, x0, x1, y0, y1, x_log, y_log):
                          "Reset the calibration and click them again.")
     M_inv = np.linalg.inv(M)
 
-    # Work in log10 space for log axes, plain values for linear axes
     fx = math.log10 if x_log else float
     fy = math.log10 if y_log else float
     gx = (lambda t: 10 ** t) if x_log else float
@@ -170,27 +137,18 @@ def make_transform(cal_pts, x0, x1, y0, y1, x_log, y_log):
 
 
 def rotation_angle(cal_pts) -> float:
-    """Tilt of the x-axis in degrees (positive = anticlockwise on screen)."""
     (ox, oy), (xx, xy) = cal_pts[0], cal_pts[1]
-    return math.degrees(math.atan2(-(xy - oy), xx - ox))   # image y points down
+    return math.degrees(math.atan2(-(xy - oy), xx - ox))
 
 
-# ----------------------------------------------------------------------------
-# Drawing the image with the click marks on top
-# ----------------------------------------------------------------------------
 def render_view(img, cal_pts, datasets, active_id, zoom, pan_x, pan_y):
-    """Crop to the zoomed region, resize for the screen, and draw all marks.
-
-    Returns the picture to show plus (left, top, scale), which are needed to
-    turn a click on the shown picture back into a pixel of the full image.
-    """
     W, H = img.size
     crop_w, crop_h = W / zoom, H / zoom
     left = pan_x * (W - crop_w)
     top = pan_y * (H - crop_h)
 
     disp_w = int(max(200, min(MAX_DISPLAY_W, MAX_DISPLAY_H * crop_w / crop_h)))
-    scale = disp_w / crop_w                      # screen pixels per image pixel
+    scale = disp_w / crop_w
     disp_h = max(1, round(crop_h * scale))
 
     view = img.crop((round(left), round(top), round(left + crop_w), round(top + crop_h)))
@@ -201,16 +159,14 @@ def render_view(img, cal_pts, datasets, active_id, zoom, pan_x, pan_y):
     def on_screen(p):
         return (p[0] - left) * scale, (p[1] - top) * scale
 
-    # Calibration marks: a cross with a letter
     for tag, p in zip(CAL_TAGS, cal_pts):
         x, y = on_screen(p)
-        for w, colour in [(5, "white"), (2, "#7b1fa2")]:   # white halo, then purple
+        for w, colour in [(5, "white"), (2, "#7b1fa2")]:
             d.line([x - 11, y, x + 11, y], fill=colour, width=w)
             d.line([x, y - 11, x, y + 11], fill=colour, width=w)
         d.text((x + 9, y - 22), tag, fill="#7b1fa2", font=font,
                stroke_width=2, stroke_fill="white")
 
-    # Data points: one colour per dataset, the active dataset drawn larger
     for ds in datasets:
         r = 6 if ds["id"] == active_id else 4
         for p in ds["points"]:
@@ -221,15 +177,7 @@ def render_view(img, cal_pts, datasets, active_id, zoom, pan_x, pan_y):
     return view, left, top, scale
 
 
-# ----------------------------------------------------------------------------
-# CSV export
-# ----------------------------------------------------------------------------
 def build_csv(datasets, to_data, x_label, y_label) -> str:
-    """Row 1: dataset names. Row 2: axis labels. Then the x, y values.
-
-    Each dataset takes two columns, side by side. Shorter datasets are padded
-    with empty cells.
-    """
     columns = []
     for ds in datasets:
         values = [to_data(*p) for p in ds["points"]]
@@ -248,10 +196,6 @@ def build_csv(datasets, to_data, x_label, y_label) -> str:
     return out.getvalue()
 
 
-# ----------------------------------------------------------------------------
-# Session state (Streamlit reruns the whole script on every click, so anything
-# that must survive between clicks lives in st.session_state)
-# ----------------------------------------------------------------------------
 def new_dataset():
     ss = st.session_state
     ds = {"id": ss.next_id, "name": f"Dataset {ss.next_id}",
@@ -263,7 +207,6 @@ def new_dataset():
 
 
 def reset_work():
-    """Forget calibration and all points (used when a new image arrives)."""
     ss = st.session_state
     ss.cal_pts = []
     ss.datasets = []
@@ -281,7 +224,6 @@ def init_state():
         reset_work()
 
 
-# Button callbacks -----------------------------------------------------------
 def active_dataset():
     ss = st.session_state
     for ds in ss.datasets:
@@ -305,7 +247,7 @@ def cb_clear():
 def cb_delete():
     ss = st.session_state
     ss.datasets = [ds for ds in ss.datasets if ds["id"] != ss.active_id]
-    if not ss.datasets:              # always keep at least one dataset
+    if not ss.datasets:
         new_dataset()
     ss.active_id = ss.datasets[-1]["id"]
     ss.version += 1
@@ -321,16 +263,11 @@ def cb_undo_cal():
         st.session_state.cal_pts.pop()
 
 
-# ----------------------------------------------------------------------------
-# The page
-# ----------------------------------------------------------------------------
 def main():
     st.set_page_config(page_title="Plot Digitizer", page_icon="📈", layout="wide")
     init_state()
     ss = st.session_state
 
-    # A mode change requested during the last run (must be set before the
-    # radio button is created)
     if "pending_mode" in ss:
         ss.mode = ss.pop("pending_mode")
 
@@ -338,7 +275,6 @@ def main():
     st.caption("Turn a picture of a graph back into numbers: calibrate the axes, "
                "click the points, download the CSV.")
 
-    # ---------------- Sidebar: image ----------------
     with st.sidebar:
         st.header("1 · Image")
         file = st.file_uploader("Upload a graph image",
@@ -353,7 +289,7 @@ def main():
     else:
         image_id = None
 
-    if image_id != ss.image_id:          # a different image: load it, start fresh
+    if image_id != ss.image_id:
         ss.image_id = image_id
         ss.image = None
         if image_id is not None:
@@ -369,7 +305,6 @@ def main():
         st.info("Upload an image in the sidebar, or tick **Use the sample graph** to try the app.")
         return
 
-    # ---------------- Sidebar: axes, datasets, view ----------------
     with st.sidebar:
         st.header("2 · Axes")
         c1, c2 = st.columns(2)
@@ -392,7 +327,6 @@ def main():
                   disabled=not ss.cal_pts, width="stretch")
 
         st.header("3 · Datasets")
-        # Pick up a rename typed during the last run before listing the names
         for ds in ss.datasets:
             ds["name"] = ss.get(f"name_{ds['id']}", ds["name"])
         ids = [ds["id"] for ds in ss.datasets]
@@ -420,7 +354,6 @@ def main():
             pan_x = st.slider("Move left ↔ right", 0.0, 1.0, 0.5, 0.01)
             pan_y = st.slider("Move up ↕ down", 0.0, 1.0, 0.5, 0.01)
 
-    # ---------------- Calibration status ----------------
     calibrated = len(ss.cal_pts) == 3
     to_data = to_pixel = None
     cal_error = None
@@ -455,7 +388,6 @@ def main():
         st.caption(f"Detected rotation of the scan: {rotation_angle(ss.cal_pts):+.2f}°. "
                    "The calibration corrects for it.")
 
-    # ---------------- Image and table, side by side ----------------
     col_img, col_table = st.columns([3, 2], gap="large")
 
     with col_img:
@@ -463,11 +395,9 @@ def main():
                                              active["id"], zoom, pan_x, pan_y)
         click = streamlit_image_coordinates(view, key="clicker", cursor="crosshair")
 
-        # The component keeps reporting the last click on every rerun, so only
-        # act when the click is one we have not handled yet.
         if click is not None and click != ss.last_click:
             ss.last_click = click
-            shown_w = click.get("width") or view.width      # if the browser shrank it
+            shown_w = click.get("width") or view.width
             px = left + click["x"] * (view.width / shown_w) / scale
             py = top + click["y"] * (view.width / shown_w) / scale
             if mode == MODE_CAL and not calibrated:
@@ -478,7 +408,7 @@ def main():
             elif mode == MODE_PICK and calibrated:
                 active["points"].append((px, py))
                 ss.version += 1
-                st.rerun()                                   # redraw with the new mark
+                st.rerun()
 
     with col_table:
         st.subheader(active["name"])
@@ -495,7 +425,6 @@ def main():
             st.caption("Edit a number, or add and delete rows, and the marks on the "
                        "graph move to match.")
 
-            # Table -> graph: if the user changed the table, move the points
             rows = edited.dropna(how="all")
             if rows.isna().any().any():
                 st.caption("Fill in both x and y to place the new point.")
@@ -511,7 +440,6 @@ def main():
                         ss.version += 1
                         st.rerun()
 
-    # ---------------- Download ----------------
     st.divider()
     st.subheader("Download")
     if to_data is None:
